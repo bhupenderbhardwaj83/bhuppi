@@ -1,0 +1,19 @@
+.toolchain/
+dist/
+/bhuppi
+/bhuppi.exe
+*.test
+/bhuppi-*
+
+# Atlas source books. The embedded index in internal/atlas/data.json stays.
+ebook/
+
+.env
+.env.*
+credentials
+credentials.json
+secrets
+secrets.json
+*.pem
+*.key
+.DS_Store

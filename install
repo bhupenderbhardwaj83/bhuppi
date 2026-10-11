@@ -1,0 +1,4 @@
+#!/bin/sh
+# Dispatcher. On macOS and Linux this is the command you run.
+cd "$(CDPATH= cd -- "$(dirname "$0")" && pwd)" || exit 1
+exec ./install.sh "$@"
