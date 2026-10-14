@@ -16,6 +16,15 @@ ROOT = Path(__file__).resolve().parents[1]
 EPUB = ROOT / "ebook" / "The-Story-of-Linux-part-6.epub"
 OUT = ROOT / "internal" / "atlas" / "data.json"
 
+# This callout is one nmap warning. The epub repeats it on every nmap use case.
+# Keep a single page notice. Do not copy it onto other commands.
+LAB_SCOPE = (
+    "Authorization is required for every target. Discovery, version, timing, "
+    "scripting, spoofing, and packet options can trigger monitoring or affect "
+    "fragile systems; the target placeholders must be replaced only with an "
+    "approved lab scope."
+)
+
 
 def textify(fragment: str) -> str:
     fragment = re.sub(r"<[^>]+>", " ", fragment)
@@ -94,7 +103,7 @@ def parse_tool(name: str, doc: str) -> dict:
                 "note": note,
             }
         )
-    return {
+    page = {
         "name": title,
         "syntax": syntax,
         "description": description,
@@ -102,6 +111,31 @@ def parse_tool(name: str, doc: str) -> dict:
         "origins": section_lists("Origins and purpose"),
         "cases": cases,
     }
+    lift_lab_scope(page)
+    return page
+
+
+def lab_scope_note(note: str) -> bool:
+    low = re.sub(r"\s+", " ", note).strip().lower()
+    if not low:
+        return False
+    if "approved lab scope" in low:
+        return True
+    return "authorization is required for every target" in low and "fragile" in low
+
+
+def lift_lab_scope(page: dict) -> None:
+    """Drop the repeated nmap authorization callout from each use case.
+
+    When the command is nmap, keep that sentence once as page["notice"].
+    """
+    found = False
+    for case in page["cases"]:
+        if lab_scope_note(case.get("note", "")):
+            found = True
+            case["note"] = ""
+    if found and page["name"].lower() == "nmap":
+        page["notice"] = LAB_SCOPE
 
 
 def main() -> None:

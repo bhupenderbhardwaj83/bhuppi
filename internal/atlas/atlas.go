@@ -11,6 +11,7 @@ import (
 	"unicode"
 
 	"github.com/bhupenderbhardwaj/bhuppi/internal/style"
+	"github.com/bhupenderbhardwaj/bhuppi/internal/warn"
 )
 
 //go:embed data.json
@@ -23,6 +24,7 @@ type book struct {
 // Command is one chapter.
 type Command struct {
 	Name        string `json:"name"`
+	Notice      string `json:"notice,omitempty"`
 	Syntax      string `json:"syntax"`
 	Description string `json:"description"`
 	Anatomy     []Item `json:"anatomy"`
@@ -106,6 +108,10 @@ func Render(name, section string, color bool) (string, bool) {
 func renderFull(c *Command, color bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s\n", paint(style.Accent, c.Name, color, true))
+	if c.Notice != "" {
+		b.WriteByte('\n')
+		fmt.Fprintf(&b, "%s\n", paint(style.Hidden, c.Notice, color, false))
+	}
 	if c.Syntax != "" {
 		fmt.Fprintf(&b, "%s  %s\n", paint(style.Label, "Syntax", color, true), tintSyntax(c.Syntax, c.Name, color))
 	}
@@ -126,7 +132,7 @@ func renderFull(c *Command, color bool) string {
 	for _, uc := range c.Cases {
 		fmt.Fprintf(&b, "%s\n", paint(style.Accent, uc.Title, color, true))
 		if uc.Command != "" {
-			fmt.Fprintf(&b, "  %s\n", paint(style.Example, uc.Command, color, false))
+			fmt.Fprintf(&b, "  %s\n", showCmd(uc.Command, color))
 		}
 		if uc.What != "" {
 			fmt.Fprintf(&b, "  %s\n", uc.What)
@@ -193,7 +199,7 @@ func renderSection(c *Command, q string, color bool) (string, bool) {
 		if strings.Contains(title, needle) || slug(uc.Title) == slug(needle) {
 			writeHead(uc.Title)
 			if uc.Command != "" {
-				fmt.Fprintf(&b, "  %s\n", paint(style.Example, uc.Command, color, false))
+				fmt.Fprintf(&b, "  %s\n", showCmd(uc.Command, color))
 			}
 			if uc.What != "" {
 				fmt.Fprintf(&b, "  %s\n", uc.What)
@@ -320,6 +326,13 @@ func slug(s string) string {
 		}
 	}
 	return b.String()
+}
+
+func showCmd(cmd string, color bool) string {
+	if on, _ := warn.Mark(cmd); on {
+		return warn.Show(cmd, color)
+	}
+	return paint(style.Example, cmd, color, false)
 }
 
 func paint(role style.Role, text string, color, bold bool) string {

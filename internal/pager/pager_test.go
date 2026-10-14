@@ -90,6 +90,35 @@ func TestSpaceRevealsNextPage(t *testing.T) {
 	}
 }
 
+func TestDigitCopiesAndEnterScrolls(t *testing.T) {
+	var copied []int
+	var dst bytes.Buffer
+	err := Page(&dst, strings.NewReader(manyLines(30)), Options{
+		TTY: true, Height: 10, Width: 40, Cases: 3,
+		Copy: func(n int) (string, bool) {
+			copied = append(copied, n)
+			return "copied: find src", true
+		},
+		Keys: script('2', '\n', 'q'),
+	})
+	if err != ErrQuit {
+		t.Fatal(err)
+	}
+	if len(copied) != 1 || copied[0] != 2 {
+		t.Fatalf("copied %v", copied)
+	}
+	got := dst.String()
+	if !strings.Contains(got, "copied: find src") {
+		t.Fatalf("confirmation:\n%s", got)
+	}
+	if !strings.Contains(got, "L10\n") || strings.Contains(got, "L11\n") {
+		t.Fatalf("enter should scroll one line:\n%s", got)
+	}
+	if !strings.Contains(got, "copy") || !strings.Contains(got, "number") || strings.Contains(got, "copies use case") {
+		t.Fatalf("hint:\n%s", got)
+	}
+}
+
 func TestNonTTYPrintsEverything(t *testing.T) {
 	called := false
 	var dst bytes.Buffer

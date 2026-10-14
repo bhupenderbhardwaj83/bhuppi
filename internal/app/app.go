@@ -12,6 +12,7 @@ import (
 
 	"github.com/bhupenderbhardwaj/bhuppi/internal/atlas"
 	"github.com/bhupenderbhardwaj/bhuppi/internal/catalog"
+	"github.com/bhupenderbhardwaj/bhuppi/internal/clip"
 	"github.com/bhupenderbhardwaj/bhuppi/internal/complete"
 	"github.com/bhupenderbhardwaj/bhuppi/internal/dispatch"
 	"github.com/bhupenderbhardwaj/bhuppi/internal/execx"
@@ -20,6 +21,7 @@ import (
 	"github.com/bhupenderbhardwaj/bhuppi/internal/platform"
 	"github.com/bhupenderbhardwaj/bhuppi/internal/style"
 	"github.com/bhupenderbhardwaj/bhuppi/internal/treeview"
+	"github.com/bhupenderbhardwaj/bhuppi/internal/warn"
 )
 
 // Version is the bhuppi release stamped into `bhuppi version`.
@@ -47,6 +49,15 @@ func Run(args []string, stdout, stderr io.Writer, runner Runner) int {
 		Plain: f.Plain,
 		Color: help.ColorEnabled(stdout, f.Plain),
 		OS:    f.OS,
+	}
+	if len(f.Args) == 0 && !f.Help {
+		s, err := help.Menu(cat, nil, opt)
+		if err != nil {
+			fmt.Fprintf(stderr, "%v\n", err)
+			return 2
+		}
+		emit(stdout, s)
+		return 0
 	}
 	if len(f.Args) == 0 || (f.Help && len(f.Args) == 0) {
 		s, _ := help.Render(cat, nil, opt)
@@ -80,10 +91,14 @@ func Run(args []string, stdout, stderr io.Writer, runner Runner) int {
 		return 0
 	case "explain":
 		return explain(cat, f.Args[1:], stdout, stderr)
+	case "ai-agent":
+		return aiAgentCmd(f.Args[1:], f.Dry, opt, stdout, stderr)
 	case "atlas":
 		return atlasCmd(f.Args[1:], opt, stdout, stderr)
 	case "color":
 		return colorCmd(f.Args[1:], stdout, stderr)
+	case "config":
+		return configCmd(cat, f.Args[1:], opt, stdout, stderr)
 	case "completion":
 		shell := "zsh"
 		if len(f.Args) > 1 {
@@ -99,7 +114,7 @@ func Run(args []string, stdout, stderr io.Writer, runner Runner) int {
 		emit(stdout, complete.ShellInit(shell))
 		return 0
 	case "complete":
-		emit(stdout, complete.Format(complete.Complete(cat, f.Args[1:])))
+		emit(stdout, complete.Format(complete.CompleteWith(cat, f.Args[1:], help.Options{Color: style.Allow(f.Plain)})))
 		return 0
 	case "recipe":
 		if len(f.Args) == 1 {
@@ -113,6 +128,9 @@ func Run(args []string, stdout, stderr io.Writer, runner Runner) int {
 		}
 		return runRecipe(cat, f.Args[1:], f, stdout, stderr)
 	}
+	if len(f.Args) >= 2 && f.Args[0] == "disk" && (f.Args[1] == "review" || f.Args[1] == "clean") {
+		return diskCmd(f, opt, stdout, stderr)
+	}
 	dopt := dispatch.Opt{
 		GOOS:   runtime.GOOS,
 		DryRun: f.Dry,
@@ -125,7 +143,7 @@ func Run(args []string, stdout, stderr io.Writer, runner Runner) int {
 func finish(cat *catalog.Catalog, plan dispatch.Plan, opt help.Options, stdout, stderr io.Writer, runner Runner) int {
 	switch plan.Kind {
 	case "help":
-		s, err := help.Render(cat, plan.Path, opt)
+		s, err := help.Menu(cat, plan.Path, opt)
 		if err != nil {
 			fmt.Fprintf(stderr, "%v\n", err)
 			return 2
@@ -156,10 +174,10 @@ func finish(cat *catalog.Catalog, plan dispatch.Plan, opt help.Options, stdout, 
 		var b strings.Builder
 		if len(plan.Steps) > 1 {
 			for _, st := range plan.Steps {
-				fmt.Fprintln(&b, dispatch.FormatArgv(st))
+				fmt.Fprintln(&b, warn.Show(dispatch.FormatArgv(st), opt.Color))
 			}
 		} else {
-			fmt.Fprintln(&b, dispatch.FormatArgv(plan.Argv))
+			fmt.Fprintln(&b, warn.Show(dispatch.FormatArgv(plan.Argv), opt.Color))
 		}
 		if plan.Note != "" {
 			b.WriteString(plan.Note)
@@ -174,6 +192,9 @@ func finish(cat *catalog.Catalog, plan dispatch.Plan, opt help.Options, stdout, 
 		fmt.Fprint(stderr, text)
 		return plan.Code
 	case "exec":
+		if plan.Draw == "pview" || plan.Draw == "pagents" || plan.Draw == "procs" || plan.Draw == "conns" {
+			return renderProc(plan, stdout, stderr, opt.Color)
+		}
 		if plan.Draw != "" {
 			return drawTree(plan, stdout, stderr, opt.Color)
 		}
@@ -184,7 +205,7 @@ func finish(cat *catalog.Catalog, plan dispatch.Plan, opt help.Options, stdout, 
 			if opt.Color && style.ColorableJob(plan.Path) {
 				var buf bytes.Buffer
 				code, err := execx.RunCaptured(plan.Exec, plan.StdinNull, &buf, stderr)
-				emit(stdout, style.ColorJob(plan.Path, buf.String()))
+				emit(stdout, style.ColorJobIn(plan.Path, buf.String(), style.ListRoot(plan.Exec)))
 				if err != nil {
 					fmt.Fprintf(stderr, "%v\n", err)
 					if code == 0 {
@@ -335,7 +356,11 @@ func drawTree(plan dispatch.Plan, stdout, stderr io.Writer, color bool) int {
 }
 
 func emit(w io.Writer, s string) {
-	if err := pager.Write(w, s); err != nil && !errors.Is(err, pager.ErrQuit) {
+	emitOpt(w, s, pager.Options{})
+}
+
+func emitOpt(w io.Writer, s string, opt pager.Options) {
+	if err := pager.WriteWith(w, s, opt); err != nil && !errors.Is(err, pager.ErrQuit) {
 		fmt.Fprint(w, s)
 	}
 }
@@ -379,8 +404,18 @@ func helpPath(cat *catalog.Catalog, args []string) ([]string, error) {
 		}
 		return []string{"recipe", args[1]}, nil
 	}
-	if cat.Meta(args[0]) != nil {
-		return []string{args[0]}, nil
+	if m := cat.Meta(args[0]); m != nil {
+		path := []string{args[0]}
+		n := m
+		for _, part := range args[1:] {
+			ch := catalog.Child(n, part)
+			if ch == nil {
+				break
+			}
+			path = append(path, part)
+			n = ch
+		}
+		return path, nil
 	}
 	g := cat.Group(args[0])
 	if g == nil {
@@ -484,8 +519,37 @@ func atlasCmd(args []string, opt help.Options, stdout, stderr io.Writer) int {
 		fmt.Fprint(stderr, text)
 		return 2
 	}
-	emit(stdout, text)
+	if section != "" {
+		emit(stdout, text)
+		return 0
+	}
+	commands := atlas.CaseCommands(args[0])
+	emitOpt(stdout, text, pager.Options{
+		Cases: len(commands),
+		Hint:  pager.AtlasHint,
+		Copy: func(n int) (string, bool) {
+			cmd, ok := atlas.Pick(commands, n)
+			if !ok {
+				return "", false
+			}
+			if err := clip.Copy(cmd, nil); err != nil {
+				return "clipboard tool missing", true
+			}
+			return copyConfirm(cmd, opt.Color), true
+		},
+	})
 	return 0
+}
+
+func copyConfirm(cmd string, color bool) string {
+	if on, _ := warn.Mark(cmd); on {
+		line := "! copied: " + cmd
+		if color {
+			return style.Paint(style.Hidden, line, style.Auto, false)
+		}
+		return line
+	}
+	return "copied: " + cmd
 }
 
 func colorCmd(args []string, stdout, stderr io.Writer) int {
@@ -546,7 +610,11 @@ func runExecs(execs [][]string, stdinNull bool, stdout, stderr io.Writer, runner
 	if page {
 		text := buf.String()
 		if color {
-			text = style.ColorJob(path, text)
+			root := ""
+			if len(execs) > 0 {
+				root = style.ListRoot(execs[0])
+			}
+			text = style.ColorJobIn(path, text, root)
 		}
 		emit(stdout, text)
 	}

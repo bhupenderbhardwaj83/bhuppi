@@ -35,11 +35,14 @@ type Plan struct {
 	StdinNull bool
 	Path      []string
 	Node      *catalog.Node
-	// Draw is "map" or "pmap" when bhuppi renders the tree itself.
+	// Draw is "map" or "pmap" when bhuppi renders the tree itself,
+	// or "pview" / "pagents" when bhuppi composes a process page.
 	// Limit is how many levels under the root to draw. Note is the dry-run line.
+	// Query is the pid or keyword for a process page.
 	Draw  string
 	Limit int
 	Note  string
+	Query string
 }
 
 // Resolve turns `group cmd …` into a plan. It does not execute.
@@ -91,6 +94,9 @@ func Resolve(cat *catalog.Catalog, args []string, opt Opt) Plan {
 		}
 		return Plan{Kind: "cd", Code: 2, Argv: argv, Path: r.path, Node: n, Text: cdMessage(argv)}
 	}
+	if n.Special == "pview" || n.Special == "pagents" || n.Special == "conns" || (n.Special == "procs" && procListBoxes(r.args)) {
+		return processPlan(n, r, opt)
+	}
 	shown, err := execx.Translate(opt.GOOS, argv, opt.HasGit)
 	if err != nil {
 		return Plan{Kind: "refuse", Code: 2, Path: r.path, Node: n, Text: err.Error() + "\n"}
@@ -134,6 +140,74 @@ func Resolve(cat *catalog.Catalog, args []string, opt Opt) Plan {
 		p.Execs = execs
 	}
 	return annotate(p, n, r.args)
+}
+
+func processPlan(n *catalog.Node, r walked, opt Opt) Plan {
+	steps, err := Snapshot(n.Special, r.args, opt.GOOS)
+	if err != nil {
+		return Plan{Kind: "refuse", Code: 2, Path: r.path, Node: n, Text: err.Error() + "\n"}
+	}
+	shown := make([][]string, 0, len(steps))
+	for _, st := range steps {
+		one, terr := execx.Translate(opt.GOOS, st, opt.HasGit)
+		if terr != nil {
+			return Plan{Kind: "refuse", Code: 2, Path: r.path, Node: n, Text: terr.Error() + "\n"}
+		}
+		shown = append(shown, one)
+	}
+	query := ""
+	if len(r.args) > 0 {
+		query = r.args[0]
+	}
+	if opt.DryRun {
+		p := Plan{Kind: "dry", Code: 0, Argv: shown[0], Steps: shown, Path: r.path, Node: n, Draw: n.Special, Query: query}
+		return procListNote(p, n, query)
+	}
+	execs := make([][]string, 0, len(shown))
+	for _, st := range shown {
+		if len(st) == 0 {
+			return Plan{Kind: "refuse", Code: 2, Text: "empty argv\n"}
+		}
+		abs, ok := lookup(opt, st[0])
+		if !ok {
+			return Plan{Kind: "missing", Code: 2, Path: r.path, Node: n, Text: missingText(n, st[0], opt.GOOS)}
+		}
+		execs = append(execs, append([]string{abs}, st[1:]...))
+	}
+	return procListNote(Plan{
+		Kind: "exec", Code: 0, Argv: shown[0], Exec: execs[0], Execs: execs, Steps: shown,
+		Path: r.path, Node: n, Draw: n.Special, Query: query,
+	}, n, query)
+}
+
+func procListBoxes(args []string) bool {
+	if len(args) == 0 {
+		return true
+	}
+	return len(args) == 1 && !strings.HasPrefix(args[0], "-")
+}
+
+func procListNote(p Plan, n *catalog.Node, query string) Plan {
+	if n == nil {
+		return p
+	}
+	if n.Special == "conns" {
+		if query == "reputation-check" {
+			p.Note = "bhuppi then resolves names and checks reputation for public addresses\n"
+			return p
+		}
+		p.Note = "bhuppi then resolves names\n"
+		return p
+	}
+	if n.Special != "procs" {
+		return p
+	}
+	if query == "" {
+		p.Note = "bhuppi draws the boxes\n"
+		return p
+	}
+	p.Note = "bhuppi draws the boxes for command lines that contain " + query + "\n"
+	return p
 }
 
 func annotate(p Plan, n *catalog.Node, args []string) Plan {

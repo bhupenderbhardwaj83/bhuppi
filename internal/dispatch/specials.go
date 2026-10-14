@@ -268,6 +268,18 @@ func init() {
 		bin := map[string]string{"md5": "md5sum", "sha1": "sha1sum", "sha256": "sha256sum", "sha512": "sha512sum"}[algo]
 		return append([]string{bin}, files...), nil
 	}
+	specials["dreview"] = func(_ *catalog.Node, _ []string, _ Opt) ([]string, error) {
+		return nil, fmt.Errorf("disk review is drawn by bhuppi")
+	}
+	specials["dclean"] = func(_ *catalog.Node, _ []string, _ Opt) ([]string, error) {
+		return nil, fmt.Errorf("disk clean does not exec rm")
+	}
+	specials["conns"] = func(_ *catalog.Node, args []string, _ Opt) ([]string, error) {
+		if len(args) > 1 || (len(args) == 1 && args[0] != "reputation-check") {
+			return nil, fmt.Errorf("net connections takes reputation-check, or nothing")
+		}
+		return []string{"lsof", "-n", "-P", "-i"}, nil
+	}
 	specials["ports"] = func(_ *catalog.Node, _ []string, opt Opt) ([]string, error) {
 		switch opt.GOOS {
 		case "darwin", "windows":
@@ -410,6 +422,8 @@ func init() {
 	specials["procs"] = specialProcs
 	specials["nice"] = specialNice
 	specials["pstat"] = specialPstat
+	specials["pview"] = specialPview
+	specials["pagents"] = specialPagents
 	specials["route"] = func(_ *catalog.Node, _ []string, opt Opt) ([]string, error) {
 		if opt.GOOS == "darwin" {
 			return []string{"route", "-n", "get", "default"}, nil
@@ -497,6 +511,103 @@ func specialProcs(_ *catalog.Node, args []string, _ Opt) ([]string, error) {
 		return []string{"pgrep", "-lf", args[0]}, nil
 	}
 	return append([]string{"ps"}, args...), nil
+}
+
+func specialPview(_ *catalog.Node, args []string, opt Opt) ([]string, error) {
+	steps, err := Snapshot("pview", args, opt.GOOS)
+	if err != nil {
+		return nil, err
+	}
+	return steps[0], nil
+}
+
+func specialPagents(_ *catalog.Node, args []string, opt Opt) ([]string, error) {
+	steps, err := Snapshot("pagents", args, opt.GOOS)
+	if err != nil {
+		return nil, err
+	}
+	return steps[0], nil
+}
+
+// Snapshot is the argv bhuppi runs for proc view and proc agents.
+// A keyword or a bare agent name cannot know pids yet, so that dry-run is the discovery command only.
+func Snapshot(kind string, args []string, goos string) ([][]string, error) {
+	switch kind {
+	case "pview":
+		if len(args) != 1 || strings.HasPrefix(args[0], "-") {
+			return nil, fmt.Errorf("proc view takes one pid or keyword")
+		}
+		if !isNum(args[0]) {
+			return [][]string{{"pgrep", "-lf", args[0]}}, nil
+		}
+		return pidSnapshot(args[0], goos, false), nil
+	case "procs":
+		if len(args) > 1 || (len(args) == 1 && strings.HasPrefix(args[0], "-")) {
+			return nil, fmt.Errorf("proc list flags are passed to ps")
+		}
+		return [][]string{psWide(goos)}, nil
+	case "conns":
+		if len(args) > 1 || (len(args) == 1 && args[0] != "reputation-check") {
+			return nil, fmt.Errorf("net connections takes reputation-check, or nothing")
+		}
+		return [][]string{{"lsof", "-n", "-P", "-i"}}, nil
+	case "pagents":
+		if len(args) > 1 {
+			return nil, fmt.Errorf("proc agents takes one name or pid")
+		}
+		if len(args) == 1 && strings.HasPrefix(args[0], "-") {
+			return nil, fmt.Errorf("proc agents does not take %s", args[0])
+		}
+		if len(args) == 1 && isNum(args[0]) {
+			return pidSnapshot(args[0], goos, true), nil
+		}
+		return [][]string{psList(goos)}, nil
+	default:
+		return nil, fmt.Errorf("unknown process page %q", kind)
+	}
+}
+
+func pidSnapshot(pid, goos string, files bool) [][]string {
+	steps := [][]string{
+		psDetail(goos, pid),
+		{"lsof", "-a", "-p", pid, "-d", "txt"},
+		psTable(goos),
+		{"lsof", "-a", "-p", pid, "-d", "cwd"},
+		{"lsof", "-a", "-p", pid, "-i"},
+	}
+	if files {
+		steps = append(steps, []string{"lsof", "-a", "-p", pid})
+	}
+	return steps
+}
+
+func psDetail(goos, pid string) []string {
+	cols := "pid=,user=,uid=,ni=,pri=,stat=,%cpu=,%mem=,etime=,command="
+	if goos == "linux" {
+		cols = "pid,user,uid,ni,pri,stat,%cpu,%mem,etime,args"
+	}
+	return []string{"ps", "-ww", "-p", pid, "-o", cols}
+}
+
+func psTable(goos string) []string {
+	if goos == "linux" {
+		return []string{"ps", "-eww", "-o", "pid=,ppid=,user=,args="}
+	}
+	return []string{"ps", "-axww", "-o", "pid=,ppid=,user=,command="}
+}
+
+func psWide(goos string) []string {
+	if goos == "linux" {
+		return []string{"ps", "-eww", "-o", "pid=,ppid=,user=,ni=,pri=,stat=,%cpu=,%mem=,etime=,args="}
+	}
+	return []string{"ps", "-axww", "-o", "pid=,ppid=,user=,ni=,pri=,stat=,%cpu=,%mem=,etime=,command="}
+}
+
+func psList(goos string) []string {
+	if goos == "linux" {
+		return []string{"ps", "-eww", "-o", "pid=,user=,args="}
+	}
+	return []string{"ps", "-axww", "-o", "pid=,user=,command="}
 }
 
 func specialPstat(_ *catalog.Node, args []string, opt Opt) ([]string, error) {

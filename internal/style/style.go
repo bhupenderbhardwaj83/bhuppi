@@ -58,6 +58,15 @@ var darkInk = map[Role]string{
 	Muted:   "#B7BDC6",
 }
 
+// TrueHidden paints a warning with the dark red as a real ESC sequence.
+// The bytes are ESC, then "[38;2;231;163;163m". They are not the two characters caret and bracket.
+func TrueHidden(text string) string {
+	if text == "" {
+		return ""
+	}
+	return "\x1b[38;2;231;163;163m" + text + "\x1b[0m"
+}
+
 // Paint colors text. It ignores the config file so a test can force a ground.
 func Paint(role Role, text string, ground Ground, bold bool) string {
 	if text == "" {

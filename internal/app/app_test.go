@@ -39,7 +39,6 @@ func run(t *testing.T, args ...string) (string, string, int) {
 
 func TestHelpTACU(t *testing.T) {
 	pages := [][]string{
-		{"--plain"},
 		{"--plain", "help"},
 		{"--plain", "--help"},
 		{"--plain", "-h"},
@@ -71,7 +70,7 @@ func TestHelpTACU(t *testing.T) {
 			}
 		}
 		switch strings.Join(args, " ") {
-		case "--plain", "--plain help", "--plain --help", "--plain -h", "--plain h":
+		case "--plain help", "--plain --help", "--plain -h", "--plain h":
 			if overview == "" {
 				overview = out
 			} else if out != overview {
@@ -123,6 +122,105 @@ func TestHelpTACU(t *testing.T) {
 	}
 }
 
+func TestDangerMenus(t *testing.T) {
+	top, _, code := run(t, "--plain")
+	if code != 0 {
+		t.Fatal(code)
+	}
+	if strings.Contains(top, "WHAT:") || strings.Contains(top, "\x1b") {
+		t.Fatal("bare bhuppi should be the plain command menu")
+	}
+	if !strings.Contains(top, "── everyday ──") || !strings.Contains(top, "── machine ──") {
+		t.Fatalf("missing section headers:\n%s", top)
+	}
+	for _, ln := range strings.Split(top, "\n") {
+		trim := strings.TrimSpace(ln)
+		if trim == "" || strings.HasPrefix(trim, "──") {
+			continue
+		}
+		for _, sec := range []string{"guide", "machine", "everyday", "setup", "build"} {
+			if strings.HasSuffix(trim, " "+sec) {
+				t.Fatalf("section id on row: %q", ln)
+			}
+		}
+	}
+	filesRow := commandRow(top, "files")
+	if !strings.Contains(filesRow, "bhuppi files") || !strings.Contains(filesRow, "e.g.") {
+		t.Fatalf("files group row: %q", filesRow)
+	}
+	colored, err := help.Menu(catalogLoad(t), nil, help.Options{Color: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(colored, "\x1b") || strings.Contains(colored, "^[") {
+		t.Fatal("colored menu should emit a real ESC, not a caret sequence")
+	}
+	files, _, code := run(t, "--plain", "files")
+	if code != 0 {
+		t.Fatal(code)
+	}
+	if strings.Contains(files, "WHAT:") {
+		t.Fatal("bare files menu became the help page")
+	}
+	listRow := commandRow(files, "list")
+	removeRow := commandRow(files, "remove")
+	if !strings.Contains(listRow, "bhuppi files list") || !strings.Contains(listRow, "e.g.") {
+		t.Fatalf("list row: %q", listRow)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(removeRow), "!") || !strings.Contains(removeRow, "e.g.") || !strings.Contains(removeRow, "bhuppi files remove") {
+		t.Fatalf("remove row: %q", removeRow)
+	}
+	if !menuBang(files, "remove") {
+		t.Fatalf("files remove unmarked:\n%s", files)
+	}
+	if menuBang(files, "list") || menuBang(files, "show") || menuBang(files, "move") {
+		t.Fatal("safe files verb was marked")
+	}
+	proc, _, code := run(t, "--plain", "proc")
+	if code != 0 {
+		t.Fatal(code)
+	}
+	if !menuBang(proc, "kill") || !menuBang(proc, "killall") || !menuBang(proc, "pkill") {
+		t.Fatalf("proc signals unmarked:\n%s", proc)
+	}
+	if menuBang(proc, "list") || menuBang(proc, "view") || menuBang(proc, "agents") || menuBang(proc, "renice") {
+		t.Fatal("safe proc verb was marked")
+	}
+	head := proc
+	if lines := strings.Split(proc, "\n"); len(lines) > 30 {
+		head = strings.Join(lines[:30], "\n")
+	}
+	if !strings.Contains(head, "! kill") {
+		t.Fatalf("first lines miss ! kill:\n%s", head)
+	}
+	if strings.Contains(files, "\x1b") {
+		t.Fatal("plain menu has ANSI")
+	}
+}
+
+func commandRow(page, name string) string {
+	for _, ln := range strings.Split(page, "\n") {
+		f := strings.Fields(ln)
+		if len(f) == 0 {
+			continue
+		}
+		if f[0] == name || (f[0] == "!" && len(f) > 1 && f[1] == name) {
+			return ln
+		}
+	}
+	return ""
+}
+
+func menuBang(page, name string) bool {
+	for _, ln := range strings.Split(page, "\n") {
+		f := strings.Fields(ln)
+		if len(f) >= 2 && f[0] == "!" && f[1] == name {
+			return true
+		}
+	}
+	return false
+}
+
 func TestDryRun(t *testing.T) {
 	out, errb, code := run(t, "--dry-run", "files", "list", ".")
 	if code != 0 {
@@ -145,11 +243,11 @@ func TestDryRun(t *testing.T) {
 	got := strings.TrimSpace(out)
 	switch runtime.GOOS {
 	case "darwin":
-		if got != "sed -i '' s/foo/bar/g f" {
+		if got != "! sed -i '' s/foo/bar/g f  ! edits files in place" {
 			t.Fatalf("darwin sed: %q", got)
 		}
 	default:
-		if got != "sed -i s/foo/bar/g f" {
+		if got != "! sed -i s/foo/bar/g f  ! edits files in place" {
 			t.Fatalf("gnu sed: %q", got)
 		}
 	}
@@ -489,11 +587,342 @@ func TestCompletionGroups(t *testing.T) {
 		t.Fatal("folders go offered no folders")
 	}
 	script := complete.Script("zsh")
-	for _, want := range []string{"commands", "files", "folders"} {
+	for _, want := range []string{"menu select", "group-name ''", "── %d ──", "compadd -V", "-l", `cmd_vals+=("$val")`, "files", "folders"} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("zsh completion missing %s", want)
 		}
 	}
+	if strings.Contains(script, `$val --`) || strings.Contains(script, `cmd_disp+=("$desc$section")`) || strings.Contains(script, `cmd_disp+=("$section")`) {
+		t.Fatal("completion display appends the section id")
+	}
+	if strings.Contains(script, `cmd_vals+=("!`) || strings.Contains(script, "cmd_vals+=(\"\\x1b") {
+		t.Fatal("completion inserts a mark")
+	}
+	var killDesc string
+	for _, it := range complete.Complete(cat, []string{"proc", ""}) {
+		if it.Value != "kill" {
+			continue
+		}
+		if strings.Contains(it.Value, "!") || strings.Contains(it.Value, "\x1b") {
+			t.Fatalf("inserted word %q", it.Value)
+		}
+		killDesc = it.Desc
+	}
+	if !strings.Contains(killDesc, "stops a process") || strings.Contains(killDesc, "\x1b") {
+		t.Fatalf("kill description %q", killDesc)
+	}
+	var listDesc, filesDesc string
+	var filesSection, removeSection string
+	for _, it := range complete.Complete(cat, []string{"files", ""}) {
+		if it.Value == "list" {
+			listDesc = it.Desc
+		}
+		if it.Value == "remove" {
+			removeSection = it.Section
+			if strings.Contains(it.Value, "!") || strings.Contains(it.Value, "\x1b") {
+				t.Fatalf("inserted word %q", it.Value)
+			}
+		}
+	}
+	if listDesc == "" || strings.Contains(listDesc, "\x1b") {
+		t.Fatalf("list description %q", listDesc)
+	}
+	if removeSection != "careful" {
+		t.Fatalf("remove section %q", removeSection)
+	}
+	for _, it := range complete.Complete(cat, []string{""}) {
+		if it.Value == "files" {
+			filesDesc = it.Desc
+			filesSection = it.Section
+		}
+	}
+	if filesDesc == "" || filesSection != "everyday" {
+		t.Fatalf("files completion %q %q", filesDesc, filesSection)
+	}
+	if !strings.Contains(filesDesc, "bhuppi files") || !strings.Contains(filesDesc, "e.g.") {
+		t.Fatalf("files display is not the four-column row: %q", filesDesc)
+	}
+	if strings.HasSuffix(strings.TrimSpace(filesDesc), "everyday") || strings.HasSuffix(strings.TrimSpace(filesDesc), "guide") {
+		t.Fatalf("section id is a trailing column: %q", filesDesc)
+	}
+	var reviewAt, cleanAt = -1, -1
+	for i, it := range complete.Complete(cat, []string{"disk", ""}) {
+		if strings.HasSuffix(strings.TrimSpace(it.Desc), it.Section) {
+			t.Fatalf("section id on display %q", it.Desc)
+		}
+		if it.Value == "review" {
+			reviewAt = i
+			if it.Section != "commands" || !strings.Contains(it.Desc, "e.g.") {
+				t.Fatalf("review display %q %q", it.Section, it.Desc)
+			}
+		}
+		if it.Value == "clean" {
+			cleanAt = i
+			if it.Section != "careful" || !strings.HasPrefix(strings.TrimSpace(it.Desc), "!") || strings.Contains(it.Value, "!") {
+				t.Fatalf("clean completion %q %q", it.Value, it.Desc)
+			}
+		}
+	}
+	if reviewAt < 0 || cleanAt < 0 || reviewAt > cleanAt {
+		t.Fatalf("disk order review=%d clean=%d", reviewAt, cleanAt)
+	}
+	colored := complete.CompleteWith(cat, []string{"disk", ""}, help.Options{Color: true})
+	var sawClean bool
+	for _, it := range colored {
+		if it.Value != "clean" {
+			continue
+		}
+		sawClean = true
+		if !strings.Contains(it.Desc, "\x1b") || strings.Contains(it.Desc, "^[") || strings.Contains(it.Value, "\x1b") {
+			t.Fatalf("colored clean display %q value %q", it.Desc, it.Value)
+		}
+	}
+	if !sawClean {
+		t.Fatal("colored disk completion missing clean")
+	}
+}
+
+func TestDiskReviewAndMenu(t *testing.T) {
+	cat, err := catalog.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := help.Render(cat, []string{"files"}, help.Options{Color: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var warnLine string
+	var alias bool
+	for _, ln := range strings.Split(page, "\n") {
+		if strings.Contains(ln, "! remove") {
+			warnLine = ln
+		}
+		if strings.Contains(ln, "open") && strings.Contains(ln, "show") {
+			alias = true
+		}
+	}
+	if !strings.Contains(warnLine, "\x1b") || !strings.Contains(warnLine, "38;2") || strings.Contains(warnLine, "^[") {
+		t.Fatalf("warning line: %q", warnLine)
+	}
+	if !alias {
+		t.Fatal("open and show are not one row")
+	}
+	plain, _, code := run(t, "--plain", "files")
+	if code != 0 || !strings.Contains(plain, "! remove") || strings.Contains(plain, "^[") || strings.Contains(plain, "\x1b") {
+		t.Fatalf("plain files menu:\n%s", plain)
+	}
+	helpDisk, _, code := run(t, "--plain", "help", "disk", "review")
+	if code != 0 {
+		t.Fatal(code)
+	}
+	flat := strings.Join(strings.Fields(helpDisk), " ")
+	for _, want := range []string{"WHAT:", "WHEN:", "RULE:", "bhuppi disk review", "Not a wipe", "rm -rf", "without --yes"} {
+		if !strings.Contains(flat, want) {
+			t.Fatalf("disk review help missing %q\n%s", want, helpDisk)
+		}
+	}
+	dry, _, code := run(t, "--dry-run", "disk", "review", "--hour")
+	if code != 0 || !strings.Contains(dry, "mdfind") || !strings.Contains(dry, "kMDItemFSContentChangeDate") || !strings.Contains(dry, "3600") {
+		t.Fatalf("hour dry-run:\n%s", dry)
+	}
+	if strings.Contains(dry, "-mtime") {
+		t.Fatalf("hour dry-run walked another interval:\n%s", dry)
+	}
+	diskPage, _, code := run(t, "--plain", "disk")
+	if code != 0 || !strings.Contains(diskPage, "! clean") || !strings.Contains(diskPage, "review") {
+		t.Fatalf("disk menu:\n%s", diskPage)
+	}
+	clean, _, code := run(t, "--dry-run", "disk", "clean")
+	if code != 0 || !strings.Contains(clean, "deletes nothing") {
+		t.Fatalf("clean dry-run:\n%s", clean)
+	}
+	yes, _, code := run(t, "--dry-run", "disk", "clean", "--yes")
+	if code != 0 || !strings.Contains(yes, "!") || !strings.Contains(yes, "-delete") || strings.Contains(yes, "Documents") {
+		t.Fatalf("clean --yes dry-run:\n%s", yes)
+	}
+	if len(cat.Groups) != 15 {
+		t.Fatal(len(cat.Groups))
+	}
+}
+
+func TestProcViewAndAgents(t *testing.T) {
+	out, errb, code := run(t, "--dry-run", "proc", "view", "1")
+	if code != 0 {
+		t.Fatal(code, errb)
+	}
+	if !strings.Contains(out, "ps ") || !strings.Contains(out, "lsof") {
+		t.Fatalf("dry-run:\n%s", out)
+	}
+	if strings.Contains(out, "\x1b") {
+		t.Fatal("dry-run ansi")
+	}
+	helpView, _, code := run(t, "--plain", "help", "proc", "view")
+	if code != 0 {
+		t.Fatal(code)
+	}
+	flat := strings.Join(strings.Fields(helpView), " ")
+	for _, want := range []string{"WHAT:", "WHEN:", "RULE:", "bhuppi proc view 1", "Not strace", "Not dtruss"} {
+		if !strings.Contains(flat, want) {
+			t.Fatalf("view help missing %q\n%s", want, helpView)
+		}
+	}
+	helpAgents, _, code := run(t, "--plain", "help", "proc", "agents")
+	if code != 0 {
+		t.Fatal(code)
+	}
+	flat = strings.Join(strings.Fields(helpAgents), " ")
+	for _, want := range []string{"WHAT:", "Not a secret dump", "Not dtruss", "Not a remote scan"} {
+		if !strings.Contains(flat, want) {
+			t.Fatalf("agents help missing %q\n%s", want, helpAgents)
+		}
+	}
+	menu, _, code := run(t, "--plain", "proc")
+	if code != 0 || !strings.Contains(menu, "agents") || !strings.Contains(menu, "view") {
+		t.Fatal("proc menu missing view or agents")
+	}
+	helpNet, _, code := run(t, "--plain", "help", "net", "connections")
+	if code != 0 {
+		t.Fatal(code)
+	}
+	flat = strings.Join(strings.Fields(helpNet), " ")
+	for _, want := range []string{
+		"WHAT:", "WHEN:", "RULE:", "bhuppi net connections", "Not nmap", "Not a remote scan",
+		"Reputation-check is not the default", "Keys are not command arguments",
+		"Private addresses are not sent", "bhuppi config reputation set vt",
+	} {
+		if !strings.Contains(flat, want) {
+			t.Fatalf("connections help missing %q\n%s", want, helpNet)
+		}
+	}
+	if strings.Contains(helpNet, "net reputation") {
+		t.Fatal("connections help offers net reputation")
+	}
+	dry, _, code := run(t, "--dry-run", "net", "connections")
+	if code != 0 || !strings.Contains(dry, "lsof -n -P -i") || !strings.Contains(dry, "bhuppi then resolves names") {
+		t.Fatalf("connections dry-run: %q", dry)
+	}
+	if strings.Contains(strings.ToLower(dry), "virustotal") || strings.Contains(strings.ToLower(dry), "abuseip") {
+		t.Fatalf("plain dry-run mentions a reputation service: %q", dry)
+	}
+	netMenu, _, code := run(t, "--plain", "net")
+	if code != 0 || !strings.Contains(netMenu, "connections") {
+		t.Fatal("net menu missing connections")
+	}
+}
+
+func TestConfigReputation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "reputation.json")
+	t.Setenv("BHUPPI_REPUTATION_FILE", path)
+	helpCfg, _, code := run(t, "--plain", "help", "config")
+	if code != 0 {
+		t.Fatal(code)
+	}
+	flat := strings.Join(strings.Fields(helpCfg), " ")
+	for _, want := range []string{
+		"WHAT:", "WHEN:", "RULE:",
+		"bhuppi config reputation set vt",
+		"bhuppi config reputation set abuseip",
+		"bhuppi config reputation status",
+		"Reputation-check is not the default",
+		"Keys are not command arguments",
+		"Private addresses are not sent",
+	} {
+		if !strings.Contains(flat, want) {
+			t.Fatalf("config help missing %q\n%s", want, helpCfg)
+		}
+	}
+	if strings.Contains(helpCfg, "net reputation") {
+		t.Fatal("config help offers net reputation")
+	}
+	_, errb, code := run(t, "net", "reputation", "status")
+	if code == 0 || !strings.Contains(errb, "unknown command") {
+		t.Fatalf("net reputation ran: %d %s", code, errb)
+	}
+	out, errb, code := run(t, "config", "reputation", "status")
+	if code != 0 || !strings.Contains(out, "virustotal  missing") || !strings.Contains(out, "abuseip     missing") {
+		t.Fatalf("status: %d\n%s\n%s", code, out, errb)
+	}
+	_, errb, code = run(t, "net", "connections", "reputation-check")
+	if code != 2 || !strings.Contains(errb, "bhuppi config reputation set vt") || !strings.Contains(errb, "bhuppi config reputation set abuseip") {
+		t.Fatalf("unconfigured check: %d %s", code, errb)
+	}
+	if strings.Contains(errb, "net reputation") {
+		t.Fatal(errb)
+	}
+	dry, _, code := run(t, "--dry-run", "net", "connections", "reputation-check")
+	if code != 0 || !strings.Contains(dry, "lsof -n -P -i") || !strings.Contains(dry, "resolves names") {
+		t.Fatalf("reputation dry-run: %q", dry)
+	}
+	_, errb, code = run(t, "config", "reputation", "set", "vt", "NO-KEY-ON-ARGV")
+	if code == 0 || strings.Contains(errb, "NO-KEY-ON-ARGV") {
+		t.Fatalf("argv key: %d %s", code, errb)
+	}
+	const sample = "SAMPLE-KEY-DO-NOT-PRINT"
+	if err := os.WriteFile(path, []byte(`{"virustotal":"`+sample+`"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, errb, code = run(t, "config", "reputation", "status")
+	if strings.Contains(out+errb, sample) {
+		t.Fatal("status contains the key")
+	}
+	if code != 0 || !strings.Contains(out, "virustotal  set") || !strings.Contains(out, "abuseip     missing") {
+		t.Fatalf("status:\n%s\n%s", out, errb)
+	}
+}
+
+func TestAIAgentReview(t *testing.T) {
+	out, _, code := run(t, "--plain", "help", "ai-agent")
+	if code != 0 {
+		t.Fatal(code)
+	}
+	flat := strings.Join(strings.Fields(out), " ")
+	for _, want := range []string{"WHAT:", "WHEN:", "RULE:", "bhuppi ai-agent review cursor", "Not a secret dump", "Not a remote scan", "Not dtruss"} {
+		if !strings.Contains(flat, want) {
+			t.Fatalf("ai-agent help missing %q", want)
+		}
+	}
+	rev, _, code := run(t, "--plain", "help", "ai-agent", "review")
+	if code != 0 {
+		t.Fatal(code)
+	}
+	flat = strings.Join(strings.Fields(rev), " ")
+	for _, want := range []string{"WHAT:", "WHEN:", "RULE:", "bhuppi ai-agent review cursor", "Not a secret dump", "Not dtruss"} {
+		if !strings.Contains(flat, want) {
+			t.Fatalf("review help missing %q", want)
+		}
+	}
+	over, _, code := run(t, "--plain")
+	if code != 0 || !strings.Contains(over, "ai-agent") {
+		t.Fatal("overview missing ai-agent")
+	}
+	if len(catalogLoad(t).Groups) != 15 {
+		t.Fatal("group count")
+	}
+	dry, _, code := run(t, "--dry-run", "ai-agent", "review", "cursor")
+	if code != 0 {
+		t.Fatal(code)
+	}
+	for _, want := range []string{"ps ", "lsof", "crontab"} {
+		if !strings.Contains(dry, want) {
+			t.Fatalf("dry-run missing %s\n%s", want, dry)
+		}
+	}
+	if runtime.GOOS == "linux" {
+		if !strings.Contains(dry, "systemctl") || strings.Contains(dry, "launchctl") {
+			t.Fatal(dry)
+		}
+	} else if !strings.Contains(dry, "launchctl") {
+		t.Fatal(dry)
+	}
+}
+
+func catalogLoad(t *testing.T) *catalog.Catalog {
+	t.Helper()
+	cat, err := catalog.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cat
 }
 
 func TestEveryHelpPage(t *testing.T) {
@@ -633,11 +1062,11 @@ func TestOpenListMapStat(t *testing.T) {
 
 func TestProcMac(t *testing.T) {
 	out, errb, code := run(t, "--dry-run", "proc", "list")
-	if code != 0 || strings.TrimSpace(out) != "ps aux" {
+	if code != 0 || !strings.Contains(out, "ps ") || !strings.Contains(out, "bhuppi draws the boxes") || strings.Contains(out, "ps aux") {
 		t.Fatalf("list: %q %s", out, errb)
 	}
 	out, _, code = run(t, "--dry-run", "proc", "list", "ssh")
-	if code != 0 || strings.TrimSpace(out) != "pgrep -lf ssh" {
+	if code != 0 || !strings.Contains(out, "ps ") || !strings.Contains(out, "bhuppi draws the boxes") || !strings.Contains(out, "ssh") {
 		t.Fatalf("keyword: %q", out)
 	}
 	out, _, code = run(t, "--dry-run", "proc", "list", "-ef")
@@ -769,7 +1198,7 @@ func TestAtlasAndColor(t *testing.T) {
 		t.Fatalf("explain guide:\n%s", out)
 	}
 	out, _, code = run(t, "--plain", "help", "atlas")
-	for _, want := range []string{"WHAT:", "WHEN:", "RULE:", "bhuppi atlas awk", "NOT THIS"} {
+	for _, want := range []string{"WHAT:", "WHEN:", "RULE:", "bhuppi atlas awk", "NOT THIS", "use-case"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("atlas help missing %q", want)
 		}
@@ -777,6 +1206,9 @@ func TestAtlasAndColor(t *testing.T) {
 	page, _, _ := run(t, "--plain", "help")
 	if !strings.Contains(page, "bhuppi color off|on") {
 		t.Fatal("global options missing color")
+	}
+	if !strings.Contains(page, "a red ! marks a command") {
+		t.Fatal("global options missing the warning mark")
 	}
 	_, errb, code = run(t, "atlas", "not-a-command")
 	if code != 2 || !strings.Contains(errb, "closest") {

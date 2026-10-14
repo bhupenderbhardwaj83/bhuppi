@@ -1187,20 +1187,21 @@ def proc(c: Cat) -> None:
     c.add(
         "proc/list",
         "list processes",
-        "List processes. With no keyword the argv is ps aux. A keyword searches command lines with pgrep.",
+        "List processes as numbered boxes. A keyword keeps the processes whose command line contains that word.",
         bin="ps",
         unix=["ps"],
         special="procs",
         shape="bhuppi proc list [KEYWORD]",
         example="bhuppi proc list ssh",
         examples=["bhuppi proc list", "bhuppi proc list -ef"],
-        when="You want the process table, or the processes whose command matches a keyword.",
-        rule="No arguments means ps aux, which works on BSD and GNU. A single keyword is pgrep -lf KEYWORD when you want a command match. Flags you type are passed to ps and are not rewritten. Not GNU ps -C and not ps aux --sort.",
-        desc="On Windows without Git usr\\bin, the no-flag form is tasklist. Custom ps flags then need Git's ps. A keyword stays pgrep -lf and is not a GNU ps selector.",
-        not_this="Not a process killer. Not top. Not ps -C. Not ps aux --sort.",
-        runs="ps aux",
-        also_linux="pgrep -lf ssh",
-        also_macos="pgrep -lf ssh",
+        when="You want every process, or the ones whose command matches a keyword, in a short box instead of a raw ps line.",
+        rule="No arguments, or one keyword, runs ps and bhuppi draws a box for each match. --dry-run prints that ps argv and says bhuppi draws the boxes. The command line in a box is the program path plus a short role. Flags you type are passed to ps and are not drawn as boxes.",
+        desc="Each box has pid, user, state, nice, priority, cpu, memory, elapsed, program, command, called by, children, and working directory. A long argument string is not printed.",
+        not_this="Not a process killer. Not top. Not ps -C. Not a raw ps aux dump.",
+        runs="ps -axww -o pid=,ppid=,user=,ni=,pri=,stat=,%cpu=,%mem=,etime=,command=",
+        runs_linux="ps -eww -o pid=,ppid=,user=,ni=,pri=,stat=,%cpu=,%mem=,etime=,args=",
+        also_linux="bhuppi proc list ssh",
+        also_macos="bhuppi proc list ssh",
         sparkle=True,
         section="Look",
         complete="none",
@@ -1253,6 +1254,43 @@ def proc(c: Cat) -> None:
         min_args=0,
         user_args="none",
         hint="lsof ships with macOS. On Linux: apt install lsof",
+    )
+    c.add(
+        "proc/view",
+        "one process",
+        "Show one process on a single page: the program file, the programs that called it, its children, its working directory, and its connections.",
+        bin="ps",
+        unix=[],
+        special="pview",
+        shape="bhuppi proc view PID|KEYWORD",
+        example="bhuppi proc view 1",
+        when="You want one readable snapshot of a process you named, not a live screen.",
+        rule="A pid is shown directly. A keyword is pgrep -lf KEYWORD. One match opens that pid. Several matches list the pids and stop. --dry-run prints the ps and lsof argv, one per line. This is one shot. It does not loop and it does not run top.",
+        desc="Sections: process, program file, called by, children, working directory, connections. Numbers are cyan. The program path is yellow.",
+        not_this="Not strace. Not dtruss. Not a stealth tracer. Not top.",
+        section="Look",
+        complete="none",
+        min_args=1,
+        user_args="none",
+    )
+    c.add(
+        "proc/agents",
+        "local agents",
+        "Show local AI agent processes on this machine: pid, user, name, and program path.",
+        bin="ps",
+        unix=[],
+        special="pagents",
+        shape="bhuppi proc agents [NAME|PID]",
+        example="bhuppi proc agents",
+        examples=["bhuppi proc agents cursor"],
+        when="You want to see which local agents are running on this machine.",
+        rule="Matching is local and case-insensitive against cursor, claude, codex, antigravity, deepseek, qwen, chatgpt, copilot, windsurf, and ollama. A name shows up to 8 processes. More than 8 lists pids. A sensitive path is marked and is not opened. File contents and environment variables are not printed.",
+        desc="No name prints a short table. A name or a pid prints one concise page, the same facts as proc view, plus open paths and outbound remotes. A bare address or a port other than 80 or 443 is marked. Normal HTTPS stays unmarked.",
+        not_this="Not a secret dump. Not dtruss. Not a remote scan. Not a network sweep.",
+        section="Look",
+        complete="none",
+        min_args=0,
+        user_args="none",
     )
     c.add(
         "proc/top",
@@ -1428,6 +1466,27 @@ def net(c: Cat) -> None:
         min_args=0,
     )
     c.add(
+        "net/connections",
+        "inbound and outbound",
+        "Show inbound and outbound connections on this machine.",
+        bin="lsof",
+        special="conns",
+        shape="bhuppi net connections",
+        example="bhuppi net connections",
+        when="You want every connection on this machine, not only the listeners.",
+        rule="The argv is lsof -n -P -i. --dry-run prints that argv and one line that bhuppi then resolves names. It does not contact VirusTotal. Listening sockets are inbound. Other connections are outbound, grouped by host and port. The numeric address stays, and a reverse-DNS name is shown beside it when one exists. A bare address with no name, or a port other than 80 or 443, is marked. reputation-check is separate. It is the only command that contacts VirusTotal and AbuseIPDB. Keys come from bhuppi config reputation set vt and bhuppi config reputation set abuseip.",
+        desc="This is local state from lsof. bhuppi then resolves names for public addresses. Loopback and private addresses are not sent to a resolver or to either reputation service.",
+        not_this="Not nmap. Not a remote scan. Reputation-check is not the default. Keys are not command arguments. Private addresses are not sent to either service.",
+        examples=["bhuppi net connections reputation-check", "bhuppi config reputation set vt", "bhuppi config reputation set abuseip"],
+        more="bhuppi config reputation set vt · bhuppi config reputation set abuseip · bhuppi config reputation status",
+        runs="lsof -n -P -i",
+        section="Look",
+        complete="none",
+        user_args="none",
+        min_args=0,
+        sparkle=True,
+    )
+    c.add(
         "net/ip",
         "addresses",
         "Show addresses. Linux prefers ip addr, else ifconfig. macOS uses ifconfig.",
@@ -1564,6 +1623,40 @@ def pack(c: Cat) -> None:
 
 
 def disk(c: Cat) -> None:
+    c.add(
+        "disk/review",
+        "what filled the disk",
+        "Show the volume, the largest folders in your home directory, and what changed.",
+        bin="df",
+        special="dreview",
+        shape="bhuppi disk review [--hour|--day|--week|--month|--since Nh|Nd|Nw]",
+        example="bhuppi disk review",
+        when="The disk is full and macOS free space is hard to read.",
+        rule="Default prints the disk summary, all-time top folders, and the last hour, day, week, and month. One flag prints that interval and the summary, not the other intervals. On macOS the summary is the APFS container from diskutil apfs list, and each volume in that container is listed under it. On Linux the summary is df of /. --dry-run prints that argv and does not walk the disk. Changes are scoped to the home directory. Purgeable space stays separate from free.",
+        desc="Safe to remove lists rebuildable caches and does not delete them. bhuppi disk clean is the next command, and it does nothing until --yes.",
+        not_this="Not a wipe. Not rm -rf of the home directory. bhuppi disk clean without --yes deletes nothing.",
+        section="Look",
+        complete="none",
+        user_args="none",
+        min_args=0,
+        sparkle=True,
+    )
+    c.add(
+        "disk/clean",
+        "remove rebuildable caches",
+        "Delete the contents of known rebuildable cache directories when you add --yes.",
+        special="dclean",
+        shape="bhuppi disk clean [--yes]",
+        example="bhuppi disk clean",
+        when="disk review showed caches you are willing to let apps recreate.",
+        rule="Without --yes the page lists the allowlist and deletes nothing. --yes deletes the contents of those directories, not the directories, and nothing outside them. Each path is printed before it is removed. --dry-run prints the argv and does not delete.",
+        desc="The allowlist is ~/Library/Caches, ~/Library/Logs, ~/.npm/_cacache, and ~/Library/Caches/Homebrew. A missing path is skipped.",
+        not_this="Not a wipe. Not rm -rf of the home directory. bhuppi disk clean without --yes deletes nothing.",
+        section="Change",
+        complete="none",
+        user_args="none",
+        min_args=0,
+    )
     c.add("disk/space", "free space", "Show filesystem free space by running df -h.", bin="df", unix=["df"], shape="bhuppi disk space [PATH]", example="bhuppi disk space", argv=["df", "-h"], runs="df -h", section="Look", complete="folders", user_args="append")
     c.add("disk/usage", "directory size", "Show disk usage by running du -h.", bin="du", unix=["du"], shape="bhuppi disk usage [PATH]", example="bhuppi disk usage .", argv=["du", "-h"], runs="du -h .", desc="The argv starts with du -h and then your paths. Depth flags differ by OS and are not rewritten; the disk-hogs recipe prints an OS-honest pipeline.", also_linux="du -h --max-depth=1 .", also_macos="du -h -d 1 .", section="Look", complete="folders", user_args="append")
     c.add(
@@ -2010,11 +2103,29 @@ def meta(c: Cat) -> None:
         ("recipe", "safe pipelines", "Print a named, copy-safe pipeline. Add --run to execute it.", "bhuppi recipe [NAME] [--run]", "bhuppi recipe disk-hogs", "You want a known-safe composition, visible before it runs.", "Default is print only. --run executes. --dry-run prints the same pipeline."),
         ("doctor", "what this machine has", "Show OS, flavor probes, and whether each cataloged binary is on PATH.", "bhuppi doctor", "bhuppi doctor", "A tool is missing and you want the honest table.", "Present, missing, GNU, BSD, Linux-only, and darwin-only stay labeled. Nothing is installed by doctor."),
         ("explain", "Unix name to job", "Map a Unix name onto the job tree. This is the A–Z hatch.", "bhuppi explain NAME", "bhuppi explain awk", "You remember awk and want the job path.", "The first line is the job path, then one line of what it is. Skips and docs-only names say so. When the book has the command, a guide line points at bhuppi atlas."),
-        ("atlas", "command atlas", "Long guide for a command from the book: syntax, anatomy, origins, and the book's use cases.", "bhuppi atlas [NAME [SECTION]]", "bhuppi atlas awk", "You want the long guide, not the one-line job pointer.", "With no name, bhuppi atlas is the index. A name opens that command. A further word jumps to a heading such as fields. Missing names list the closest. This is not a 16th job group."),
+        ("atlas", "command atlas", "Long guide for a command from the book: syntax, anatomy, origins, and the book's use cases.", "bhuppi atlas [NAME [SECTION]]", "bhuppi atlas awk", "You want the long guide, not the one-line job pointer.", "With no name, bhuppi atlas is the index. A name opens that command. A further word jumps to a heading such as fields. Type a use-case number, then Enter, to copy its command · Enter alone moves one line · Space next page · q stop. Missing names list the closest. This is not a 16th job group."),
         ("color", "color switch", "Turn sober color on or off for later commands, or print the current setting.", "bhuppi color [on|off]", "bhuppi color off", "You want plain text in new shells, or you want color back.", "Default is on. The choice is stored in ~/.config/bhuppi/color. --plain forces plain for one invocation. NO_COLOR, when set and non-empty, forces plain."),
         ("completion", "tab completion", "Print completion code for zsh, bash, or powershell.", "bhuppi completion zsh|bash|powershell", "bhuppi completion zsh", "You want Tab to split commands, files, and folders.", "Three groups. Folders end with /. files show omits folders. folders go omits files. There is no single paths bucket."),
         ("shell-init", "shell hook", "Print the hook and completion for zsh, bash, or powershell.", "bhuppi shell-init zsh|bash|powershell", "bhuppi shell-init zsh", "You want files go to cd, and you want completion.", "The installer writes a source line. You do not need to eval it yourself. The hook cds; it does not export or alias."),
         ("version", "version", "Print the bhuppi version.", "bhuppi version", "bhuppi version", "You want the build's version string.", "version does not exec a Unix tool."),
+        (
+            "config",
+            "local settings",
+            "Store settings on this machine. Reputation keys are the first setting.",
+            "bhuppi config reputation status",
+            "bhuppi config reputation status",
+            "You want a later command to use a key without putting that key on the command line.",
+            "Three commands: bhuppi config reputation set vt, bhuppi config reputation set abuseip, and bhuppi config reputation status. set reads the key from the terminal with echo off, or from stdin when stdin is not a terminal. The key is not a command argument. status prints set or missing and never prints the key. The file is ~/.config/bhuppi/reputation.json.",
+        ),
+        (
+            "ai-agent",
+            "local agent review",
+            "One structured page for a local AI agent on this machine: processes, connections, sensitive paths, persistence, and scheduled tasks.",
+            "bhuppi ai-agent review [NAME|PID]",
+            "bhuppi ai-agent review cursor",
+            "You want a 360 review of Cursor, Claude, Codex, or another local agent without opening its files.",
+            "Paths only. File contents, keychain items, certificate material, and environment variables are not printed. The review is this machine only.",
+        ),
     ]
     for name, title, what, shape, example, when, rule in pages:
         c.meta.append(dict(
@@ -2031,6 +2142,49 @@ def meta(c: Cat) -> None:
             delivery="meta",
             complete="none",
         ))
+    for page in c.meta:
+        if page["name"] != "ai-agent":
+            continue
+        page["not_this"] = "Not a secret dump. Not a remote scan. Not dtruss. Not a 16th job group."
+        page["more"] = "bhuppi help ai-agent review · bhuppi ai-agent review cursor"
+        page["children"] = [dict(
+            name="review",
+            title="360 review",
+            what="Review one local AI agent, or every matching agent, on a single page.",
+            when="You want the process tree, who it talks to, which sensitive paths it has open, and whether it starts itself.",
+            rule="A name is one of cursor, claude, codex, antigravity, deepseek, qwen, chatgpt, copilot, windsurf, ollama. No name reviews each match. Every match is on the page. A pid reviews that process and its children. --dry-run prints ps, lsof, crontab, and launchctl or systemctl, and does not run them.",
+            desc="Sections, in order: processes, connections, sensitive paths, persistence, scheduled tasks. A red ! marks an abnormal line. Secrets are not printed.",
+            not_this="Not a secret dump. Not a remote scan. Not dtruss.",
+            more="bhuppi ai-agent review cursor · bhuppi help ai-agent review",
+            shape="bhuppi ai-agent review [NAME|PID]",
+            example="bhuppi ai-agent review cursor",
+            delivery="meta",
+            complete="none",
+        )]
+    for page in c.meta:
+        if page["name"] != "config":
+            continue
+        page["not_this"] = "Not a job group. Not a 16th catalog section. Reputation-check is not the default. Keys are not command arguments. Private addresses are not sent to either service."
+        page["more"] = "bhuppi help config · bhuppi config reputation status"
+        page["children"] = [dict(
+            name="reputation",
+            title="service keys",
+            what="Save a VirusTotal or AbuseIPDB key, or see whether one is stored.",
+            when="You want bhuppi net connections reputation-check to use a key, or you want to see whether a key is already stored.",
+            rule="bhuppi config reputation set vt reads the VirusTotal key with echo off. bhuppi config reputation set abuseip reads the AbuseIPDB key the same way. bhuppi config reputation status prints set or missing. The key is not a command argument. Neither command prints the key.",
+            desc="The file is ~/.config/bhuppi/reputation.json, mode 0600. Loopback and private addresses are not sent to either service.",
+            not_this="Reputation-check is not the default. Keys are not command arguments. Private addresses are not sent to either service.",
+            more="bhuppi config reputation set vt · bhuppi config reputation set abuseip · bhuppi config reputation status",
+            shape="bhuppi config reputation status",
+            example="bhuppi config reputation status",
+            examples=[
+                "bhuppi config reputation set vt",
+                "bhuppi config reputation set abuseip",
+            ],
+            delivery="meta",
+            complete="none",
+            section="Keys",
+        )]
 
 
 def recipes(c: Cat) -> None:

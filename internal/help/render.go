@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/bhupenderbhardwaj/bhuppi/internal/catalog"
 	"github.com/bhupenderbhardwaj/bhuppi/internal/style"
+	"github.com/bhupenderbhardwaj/bhuppi/internal/warn"
 )
 
 const shapeLegend = "Shape: UPPERCASE = you supply it · [brackets] = optional · a|b = pick one"
@@ -44,8 +46,21 @@ func Render(cat *catalog.Catalog, path []string, opt Options) (string, error) {
 	if path[0] == "recipe" {
 		return renderRecipe(cat, path[1:], opt)
 	}
-	if m := cat.Meta(path[0]); m != nil && len(path) == 1 {
-		return leaf(cat, m, "bhuppi "+m.Name, opt), nil
+	if m := cat.Meta(path[0]); m != nil {
+		n := m
+		title := "bhuppi " + m.Name
+		for _, part := range path[1:] {
+			ch := catalog.Child(n, part)
+			if ch == nil {
+				return "", fmt.Errorf("no help page for %q\nsee: bhuppi help %s", strings.Join(path, " "), strings.TrimPrefix(title, "bhuppi "))
+			}
+			n = ch
+			title += " " + part
+		}
+		if len(n.Children) > 0 {
+			return groupPage(title, n, opt), nil
+		}
+		return leaf(cat, n, title, opt), nil
 	}
 	n, title, err := walk(cat, path)
 	if err != nil {
@@ -103,10 +118,7 @@ func overview(cat *catalog.Catalog, opt Options) string {
 	for i := range cat.Groups {
 		g := &cat.Groups[i]
 		writeSection(&b, sectionTitle(g), opt)
-		for j := range g.Children {
-			ch := &g.Children[j]
-			writeRow(&b, ch.Name, ch.Sparkle, ch.Shape, ch.Example, ch.Desc, nil, opt)
-		}
+		writeCommandRows(&b, g.Children, opt)
 		b.WriteByte('\n')
 	}
 	writeSection(&b, "SETUP — this atlas", opt)
@@ -124,6 +136,7 @@ func overview(cat *catalog.Catalog, opt Options) string {
 
 func groupPage(title string, n *catalog.Node, opt Options) string {
 	var b strings.Builder
+	writeIndex(&b, n.Name, n.Children, opt, false)
 	fmt.Fprintf(&b, "%s — %s\n", title, n.Title)
 	writeContract(&b, n, opt)
 	b.WriteByte('\n')
@@ -144,10 +157,7 @@ func groupPage(title string, n *catalog.Node, opt Options) string {
 	}
 	for _, sec := range order {
 		fmt.Fprintf(&b, "%s\n", paint(style.Accent, strings.ToUpper(sec), opt, true))
-		for _, ch := range sections[sec] {
-			extras := ch.Examples
-			writeRow(&b, ch.Name, ch.Sparkle, ch.Shape, ch.Example, ch.Desc, extras, opt)
-		}
+		writeCommandRows(&b, nodesOf(sections[sec]), opt)
 		b.WriteByte('\n')
 	}
 	writeOSNotes(&b, n, opt.OS)
@@ -160,14 +170,14 @@ func groupPage(title string, n *catalog.Node, opt Options) string {
 
 func leaf(cat *catalog.Catalog, n *catalog.Node, title string, opt Options) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s — %s\n", title, n.Title)
+	fmt.Fprintf(&b, "%s\n", paintHead(title, n.Title, n.Name, opt))
 	writeContract(&b, n, opt)
 	b.WriteByte('\n')
 	b.WriteString(shapeLegend)
 	b.WriteString("\n\n")
 	writeRow(&b, n.Name, n.Sparkle, n.Shape, n.Example, n.Desc, n.Examples, opt)
 	if runs := runsFor(n, opt.OS); runs != "" {
-		fmt.Fprintf(&b, "  runs: %s\n", runs)
+		fmt.Fprintf(&b, "  runs: %s\n", paintCmd(runs, opt))
 	}
 	writeOSNotes(&b, n, opt.OS)
 	if n.Docs != "" {
@@ -296,22 +306,130 @@ func writeRow(b *strings.Builder, name string, sparkle bool, shape, example, des
 	if sparkle {
 		mark = "✨ "
 	}
-	left := fmt.Sprintf("  %-12s %s%s", name, mark, shape)
+	danger, _ := warn.Name(name)
+	label := name
+	if danger {
+		label = "! " + name
+	}
+	role := style.Accent
+	if danger {
+		role = style.Hidden
+	}
+	left := fmt.Sprintf("  %-14s %s%s", label, mark, shape)
 	pad := 58 - len(left)
 	if pad < 1 {
 		pad = 1
 	}
 	shown := left
 	if opt.Color {
-		shown = fmt.Sprintf("  %-12s %s%s", paint(style.Accent, name, opt, false), mark, shape)
+		colored := paint(role, label, opt, false)
+		if danger {
+			colored = style.TrueHidden(label)
+		}
+		shown = fmt.Sprintf("  %-14s %s%s", colored, mark, shape)
 	}
-	fmt.Fprintf(b, "%s%s|  %s\n", shown, strings.Repeat(" ", pad), paint(style.Example, "e.g. "+example, opt, false))
+	fmt.Fprintf(b, "%s%s|  %s\n", shown, strings.Repeat(" ", pad), paintCmd("e.g. "+example, opt))
 	for _, ln := range wrap(desc, 70) {
+		if danger {
+			ln = paint(style.Hidden, ln, opt, false)
+		}
 		fmt.Fprintf(b, "                  %s\n", ln)
 	}
 	for _, ex := range extras {
-		fmt.Fprintf(b, "    %s\n", paint(style.Example, ex, opt, false))
+		fmt.Fprintf(b, "    %s\n", paintCmd(ex, opt))
 	}
+}
+
+func writeIndex(b *strings.Builder, parent string, children []catalog.Node, opt Options, top bool) {
+	if len(children) == 0 {
+		return
+	}
+	rows := mergeAliases(children)
+	for i := range rows {
+		rows[i].top = top
+	}
+	secs := menuSections(parent, rows, top)
+	for i, sec := range secs {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		fmt.Fprintln(b, paint(style.Label, "── "+sec.title+" ──", opt, false))
+		writeSectionRows(b, sec.rows, opt)
+	}
+	b.WriteByte('\n')
+}
+
+type menuRow struct {
+	names []string
+	title string
+	node  catalog.Node
+	top   bool
+}
+
+func mergeAliases(nodes []catalog.Node) []menuRow {
+	var rows []menuRow
+	at := map[string]int{}
+	for _, n := range nodes {
+		key := aliasKey(n)
+		if i, ok := at[key]; ok {
+			if !hasName(rows[i].names, n.Name) {
+				rows[i].names = append(rows[i].names, n.Name)
+			}
+			continue
+		}
+		at[key] = len(rows)
+		rows = append(rows, menuRow{names: []string{n.Name}, title: n.Title, node: n})
+	}
+	for i := range rows {
+		sort.Strings(rows[i].names)
+	}
+	return rows
+}
+
+// aliasKey pairs names that are one job. open and show both run cat.
+// more and less both page a file. killall and pkill stay separate.
+func aliasKey(n catalog.Node) string {
+	switch n.Name {
+	case "more", "less":
+		return "page-a-file"
+	}
+	if n.Bin != "" {
+		return n.Title + "\x00" + n.Bin
+	}
+	return "\x00" + n.Name
+}
+
+func hasName(names []string, name string) bool {
+	for _, n := range names {
+		if n == name {
+			return true
+		}
+	}
+	return false
+}
+
+func writeCommandRows(b *strings.Builder, nodes []catalog.Node, opt Options) {
+	for _, row := range mergeAliases(nodes) {
+		name := strings.Join(row.names, "  ")
+		writeRow(b, name, row.node.Sparkle, row.node.Shape, row.node.Example, row.node.Desc, row.node.Examples, opt)
+	}
+}
+
+func nodesOf(nodes []*catalog.Node) []catalog.Node {
+	out := make([]catalog.Node, len(nodes))
+	for i, n := range nodes {
+		out[i] = *n
+	}
+	return out
+}
+
+func paintHead(title, subtitle, name string, opt Options) string {
+	line := title + " — " + subtitle
+	if on, _ := warn.Name(name); on {
+		line = "! " + line
+		return paint(style.Hidden, line, opt, false)
+	}
+	return line
 }
 
 func writeSection(b *strings.Builder, title string, opt Options) {
@@ -354,6 +472,7 @@ func writeFooters(b *strings.Builder, plain, color bool) {
 			"Enter               one more line, when the output is taller than the screen",
 			"Space               next page",
 			"q                   stop",
+			"!                    a red ! marks a command that can delete data, stop a process, or overwrite a disk",
 		}},
 	}
 	for i, sec := range sections {
@@ -395,6 +514,13 @@ func identityArt(word, tag string, color bool) string {
 	}
 	// The notch stays the bhuppi mark, not a face.
 	return style.Paint(style.Accent, art, style.Auto, false)
+}
+
+func paintCmd(text string, opt Options) string {
+	if on, _ := warn.Mark(text); on {
+		return warn.Show(text, opt.Color)
+	}
+	return paint(style.Example, text, opt, false)
 }
 
 func paint(role style.Role, text string, opt Options, bold bool) string {

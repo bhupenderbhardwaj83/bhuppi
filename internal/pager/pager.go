@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -22,11 +23,17 @@ var ErrQuit = errors.New("pager quit")
 
 // Options controls a page. Height is the terminal row count.
 // Keys is nil in production; tests pass a fake reader.
+// Copy, when set, is the atlas use-case clipboard. Cases is how many
+// use cases the page has: under 10, one digit copies; 10 or more, digits
+// then Enter.
 type Options struct {
 	TTY    bool
 	Height int
 	Width  int
 	Keys   func() (byte, error)
+	Hint   string
+	Cases  int
+	Copy   func(n int) (message string, found bool)
 }
 
 // IsTerminal reports whether w is a terminal.
@@ -40,7 +47,16 @@ func IsTerminal(w io.Writer) bool {
 
 // Write pages text when dst is a terminal and the text is taller than the screen.
 func Write(dst io.Writer, text string) error {
-	return Copy(dst, strings.NewReader(text))
+	return WriteWith(dst, text, Options{})
+}
+
+// WriteWith is Write with pager options (atlas copy, custom hint).
+func WriteWith(dst io.Writer, text string, opt Options) error {
+	opt.TTY = IsTerminal(dst)
+	if opt.TTY && opt.Height <= 0 {
+		opt.Width, opt.Height = sizeOf(dst)
+	}
+	return Page(dst, strings.NewReader(text), opt)
 }
 
 // Copy pages a stream. The destination's terminal size is used when it is a TTY.
@@ -83,15 +99,13 @@ func Page(dst io.Writer, src io.Reader, opt Options) error {
 	}
 	feed.pushFront(left)
 
-	oneLine := false
 	for {
-		fullPage, err := prompt(dst, opt)
+		act, err := prompt(dst, opt)
 		if err != nil {
 			return err
 		}
-		oneLine = !fullPage
 		var chunk []string
-		if oneLine {
+		if act == actLine {
 			chunk, more, err = feed.take(1, width, true)
 		} else {
 			chunk, more, err = feed.take(page, width, false)
@@ -117,30 +131,81 @@ func writeLines(dst io.Writer, lines []string) error {
 	return nil
 }
 
-// prompt waits for one key. fullPage is true when the next chunk is a page (Space).
-func prompt(dst io.Writer, opt Options) (fullPage bool, err error) {
-	const hint = "-- Enter line · Space page · q stop --"
-	if _, err = io.WriteString(dst, hint); err != nil {
-		return false, err
+type action int
+
+const (
+	actLine action = iota
+	actPage
+)
+
+// prompt waits for a key. Copy keys stay on this screen.
+func prompt(dst io.Writer, opt Options) (action, error) {
+	digits := ""
+	for {
+		if _, err := io.WriteString(dst, opt.hint()); err != nil {
+			return 0, err
+		}
+		var key byte
+		var err error
+		if opt.Keys != nil {
+			key, err = opt.Keys()
+		} else {
+			key, err = readTTY()
+		}
+		_, _ = io.WriteString(dst, "\r\033[K")
+		if err != nil {
+			return 0, err
+		}
+		if opt.Copy != nil && opt.Cases > 0 && key >= '0' && key <= '9' {
+			if opt.Cases < 10 {
+				if key >= '1' && key <= '9' {
+					noteCopy(dst, opt, int(key-'0'))
+				}
+				continue
+			}
+			digits += string(rune(key))
+			continue
+		}
+		switch key {
+		case 'q', 'Q', 3:
+			return 0, ErrQuit
+		case ' ':
+			return actPage, nil
+		case '\n', '\r':
+			if digits != "" && opt.Copy != nil {
+				n, _ := strconv.Atoi(digits)
+				digits = ""
+				noteCopy(dst, opt, n)
+				continue
+			}
+			return actLine, nil
+		default:
+			return actLine, nil
+		}
 	}
-	var key byte
-	if opt.Keys != nil {
-		key, err = opt.Keys()
-	} else {
-		key, err = readTTY()
+}
+
+// AtlasHint is the footer on an atlas command page.
+const AtlasHint = "-- Type a use-case number, then Enter, to copy its command · Enter alone moves one line · Space next page · q stop --"
+
+func (opt Options) hint() string {
+	if opt.Hint != "" {
+		return opt.Hint
 	}
-	_, _ = io.WriteString(dst, "\r\033[K")
-	if err != nil {
-		return false, err
+	if opt.Copy != nil && opt.Cases > 0 {
+		return AtlasHint
 	}
-	switch key {
-	case 'q', 'Q', 3:
-		return false, ErrQuit
-	case ' ':
-		return true, nil
-	default:
-		// Enter, newline, and anything else reveal one line.
-		return false, nil
+	return "-- Enter line · Space page · q stop --"
+}
+
+func noteCopy(dst io.Writer, opt Options, n int) {
+	msg, found := opt.Copy(n)
+	if !found {
+		fmt.Fprintf(dst, "no use case %d\n", n)
+		return
+	}
+	if msg != "" {
+		fmt.Fprintln(dst, msg)
 	}
 }
 

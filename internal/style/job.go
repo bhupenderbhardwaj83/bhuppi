@@ -24,15 +24,43 @@ func ColorableJob(path []string) bool {
 
 // ColorJob tints captured stdout. Binary output is returned unchanged.
 func ColorJob(path []string, text string) string {
+	return ColorJobIn(path, text, "")
+}
+
+// ColorJobIn is ColorJob with the directory a listing was taken from.
+// A bare name is classified by stating that directory, so a folder is amber
+// even when ls did not mark it.
+func ColorJobIn(path []string, text, root string) string {
 	if text == "" || strings.ContainsRune(text, 0) || !ColorableJob(path) {
 		return text
 	}
 	switch {
 	case len(path) >= 2 && path[1] == "list":
-		return colorLines(text, func(ln string) string { return colorListLine(ln, Auto) })
+		return colorList(text, root, Auto)
 	default:
 		return colorLines(text, colorStatLine)
 	}
+}
+
+// ListRoot is the single path a list command showed. Empty means the working directory.
+func ListRoot(argv []string) string {
+	if len(argv) == 0 {
+		return ""
+	}
+	base := filepath.Base(argv[0])
+	if base == "find" && len(argv) > 1 {
+		return argv[1]
+	}
+	var paths []string
+	for _, a := range argv[1:] {
+		if a == "-" || !strings.HasPrefix(a, "-") {
+			paths = append(paths, a)
+		}
+	}
+	if len(paths) == 1 {
+		return paths[0]
+	}
+	return ""
 }
 
 func colorLines(text string, fn func(string) string) string {
@@ -46,32 +74,56 @@ func colorLines(text string, fn func(string) string) string {
 	return strings.Join(lines, "\n")
 }
 
-func colorListLine(ln string, ground Ground) string {
+func colorList(text, root string, ground Ground) string {
+	cur := root
+	lines := strings.Split(text, "\n")
+	for i, ln := range lines {
+		trim := strings.TrimSpace(ln)
+		if trim == "" {
+			continue
+		}
+		if strings.HasSuffix(trim, ":") && !strings.Contains(trim, " ") {
+			cur = strings.TrimSuffix(trim, ":")
+			continue
+		}
+		lines[i] = colorListLine(ln, cur, ground)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func colorListLine(ln, root string, ground Ground) string {
 	if perm, rest, ok := splitLong(ln); ok {
 		name := filenameAfterDate(rest)
-		role := NameRole(filepath.Base(name), strings.HasPrefix(perm, "d"))
+		role := NameRole(filepath.Base(name), strings.HasPrefix(perm, "d") || isDir(root, name))
 		head := strings.TrimSuffix(ln, name)
 		if name != "" && strings.HasSuffix(ln, name) {
 			return tintNumbers(head, ground) + Paint(role, name, ground, false)
 		}
 		return tintNumbers(ln, ground)
 	}
-	return colorPathLine(strings.TrimRight(ln, "\r"))
+	return colorPathLine(strings.TrimRight(ln, "\r"), root, ground)
 }
 
-func colorPathLine(ln string) string {
+func colorPathLine(ln, root string, ground Ground) string {
 	trim := strings.TrimSpace(ln)
 	if trim == "" {
 		return ln
 	}
 	base := filepath.Base(strings.TrimRight(trim, "/"))
-	isDir := strings.HasSuffix(trim, "/")
-	if !isDir {
-		if st, err := os.Stat(trim); err == nil {
-			isDir = st.IsDir()
-		}
+	dir := strings.HasSuffix(trim, "/") || isDir(root, trim)
+	return Paint(NameRole(base, dir), ln, ground, false)
+}
+
+func isDir(root, name string) bool {
+	if name == "" {
+		return false
 	}
-	return Paint(NameRole(base, isDir), ln, Auto, false)
+	candidate := name
+	if root != "" && !filepath.IsAbs(name) {
+		candidate = filepath.Join(root, name)
+	}
+	st, err := os.Stat(candidate)
+	return err == nil && st.IsDir()
 }
 
 func colorStatLine(ln string) string {
